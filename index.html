@@ -101,7 +101,7 @@ p{margin:0}
   <section class="view" id="v-crop" hidden>
     <div class="top"><h1>모서리 맞추기</h1><span class="tag">step 1 / 2</span></div>
     <div class="stage" id="stage"><canvas id="cropCv"></canvas></div>
-    <p class="eng" id="eng">자동 감지 엔진 대기 중</p>
+    <p class="eng" id="eng">모서리 네 점을 손가락으로 끌어 맞추세요. 자동 감지는 버튼을 누르면 켜집니다.</p>
     <div class="row">
       <button class="btn" id="auto">자동 감지</button>
       <button class="btn" id="whole">전체 선택</button>
@@ -202,7 +202,6 @@ $('#file').addEventListener('change', async e => {
     src.getContext('2d').drawImage(img, 0, 0, src.width, src.height);
     URL.revokeObjectURL(url);
   } catch (err) { toast('사진을 열 수 없습니다. 다른 사진으로 시도하세요.'); return; }
-  ensureCV();
   quad = insetQuad(0.06);
   show('crop'); layoutCrop();
   if (cvReady) runAuto(true);
@@ -249,7 +248,8 @@ function toSrc(e){
 cropCv.addEventListener('pointerdown', e => {
   const p = toSrc(e); let bi = -1, bd = 1e9;
   quad.forEach((q,i) => { const d = Math.hypot((q[0]-p[0])*cropScale, (q[1]-p[1])*cropScale); if (d < bd){ bd = d; bi = i; } });
-  if (bd < 52){ drag = bi; cropCv.setPointerCapture(e.pointerId); e.preventDefault(); }
+  if (bi >= 0){ drag = bi; cropCv.setPointerCapture(e.pointerId); e.preventDefault();
+    quad[drag] = [clamp(p[0],0,src.width), clamp(p[1],0,src.height)]; drawCrop(); }
 });
 cropCv.addEventListener('pointermove', e => {
   if (drag < 0) return;
@@ -263,7 +263,10 @@ window.addEventListener('resize', () => { if (current === 'crop' && src) layoutC
 $('#whole').onclick = () => { quad = insetQuad(0); drawCrop(); };
 $('#cropBack').onclick = () => show('home');
 $('#auto').onclick = () => {
-  if (!cvReady) { toast(engineState === 'fail' ? '자동 감지를 쓸 수 없습니다. 모서리를 직접 맞추세요.' : '엔진을 불러오는 중입니다. 잠시 후 다시 누르세요.'); return; }
+  if (!cvReady) {
+    if (engineState === 'fail') { toast('자동 감지를 쓸 수 없습니다. 모서리를 직접 맞추세요.'); return; }
+    ensureCV(); toast('엔진을 불러옵니다. 끝나면 자동으로 감지합니다.'); return;
+  }
   runAuto(false);
 };
 $('#cropNext').onclick = async () => {
@@ -277,7 +280,8 @@ function setEngine(s){
   engineState = s;
   $('#eng').textContent = {
     loading:'자동 감지 엔진 불러오는 중… (처음 한 번, 약 10MB)',
-    ready:'자동 감지 준비됨', fail:'자동 감지 엔진을 불러오지 못했습니다. 모서리를 직접 맞추세요.', idle:'자동 감지 엔진 대기 중'
+    ready:'자동 감지 준비됨', fail:'자동 감지 엔진을 불러오지 못했습니다. 모서리를 직접 맞추세요.',
+    idle:'모서리 네 점을 손가락으로 끌어 맞추세요. 자동 감지는 버튼을 누르면 켜집니다.'
   }[s];
 }
 function ensureCV(){
@@ -286,14 +290,16 @@ function ensureCV(){
   const s = document.createElement('script');
   s.src = 'https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.9.0-release.1/dist/opencv.js';
   s.async = true;
-  s.onload = async () => {
-    try {
-      let c = window.cv;
-      if (c && typeof c.then === 'function') { c = await c; window.cv = c; }
-      if (!c.Mat) await new Promise((ok, no) => { c.onRuntimeInitialized = ok; setTimeout(no, 40000); });
-      cvReady = true; setEngine('ready');
-      if (current === 'crop' && src) runAuto(true);
-    } catch (err) { setEngine('fail'); }
+  s.onload = () => {
+    // cv 객체를 await 하면 무한 반복에 걸리므로, 준비 여부를 주기적으로 확인만 한다.
+    let tries = 0;
+    const wait = setInterval(() => {
+      const c = window.cv;
+      if (c && c.Mat && c.imread){
+        clearInterval(wait); cvReady = true; setEngine('ready');
+        if (current === 'crop' && src) runAuto(false);
+      } else if (++tries > 120){ clearInterval(wait); setEngine('fail'); }
+    }, 500);
   };
   s.onerror = () => setEngine('fail');
   document.head.appendChild(s);
