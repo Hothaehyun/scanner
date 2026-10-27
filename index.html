@@ -101,7 +101,7 @@ p{margin:0}
   <section class="view" id="v-crop" hidden>
     <div class="top"><h1>모서리 맞추기</h1><span class="tag">step 1 / 2</span></div>
     <div class="stage" id="stage"><canvas id="cropCv"></canvas></div>
-    <p class="eng" id="eng">모서리 네 점을 손가락으로 끌어 맞추세요. 자동 감지는 버튼을 누르면 켜집니다.</p>
+    <p class="eng" id="eng">원(●)은 모서리 한 점, 네모(■)는 변 전체를 밀어 줍니다. 자동 감지는 버튼을 누르면 켜집니다.</p>
     <div class="row">
       <button class="btn" id="auto">자동 감지</button>
       <button class="btn" id="whole">전체 선택</button>
@@ -134,10 +134,11 @@ p{margin:0}
   <section class="view" id="v-out" hidden>
     <div class="top"><h1>내보내기</h1><span class="tag" id="outCount"></span></div>
     <div class="row">
-      <button class="btn primary" id="pdfBtn">PDF 만들기</button>
-      <button class="btn" id="outBack">돌아가기</button>
+      <button class="btn primary" id="pdfBtn" disabled>PDF 준비 중…</button>
+      <button class="btn" id="imgBtn" disabled>이미지 전체 저장</button>
     </div>
-    <p class="hint">PDF가 저장되지 않으면 아래 이미지를 길게 눌러 &lsquo;사진에 추가&rsquo;를 고르세요.</p>
+    <div class="row"><button class="btn" id="outBack">돌아가기</button></div>
+    <p class="hint">저장 창에서 &lsquo;이미지 저장&rsquo;을 고르면 사진 앱에 들어갑니다. 안 되면 아래 이미지를 길게 눌러 &lsquo;사진에 추가&rsquo;를 고르세요.</p>
     <div class="out" id="outList" style="display:flex;flex-direction:column;gap:16px"></div>
   </section>
 
@@ -235,26 +236,38 @@ function drawCrop(){
   ctx.beginPath();
   quad.forEach((q,i) => i ? ctx.lineTo(q[0]*k, q[1]*k) : ctx.moveTo(q[0]*k, q[1]*k));
   ctx.closePath(); ctx.lineWidth = 2*dpr; ctx.strokeStyle = accent; ctx.stroke();
-  quad.forEach(q => {
-    ctx.beginPath(); ctx.arc(q[0]*k, q[1]*k, 12*dpr, 0, Math.PI*2);
+  handles().forEach((q,i) => {
+    ctx.beginPath();
+    if (i < 4) ctx.arc(q[0]*k, q[1]*k, 12*dpr, 0, Math.PI*2);
+    else ctx.rect(q[0]*k - 9*dpr, q[1]*k - 9*dpr, 18*dpr, 18*dpr);
     ctx.fillStyle = 'rgba(255,255,255,.92)'; ctx.fill();
     ctx.lineWidth = 3*dpr; ctx.strokeStyle = accent; ctx.stroke();
-  });
-}
+  });}
 function toSrc(e){
   const r = cropCv.getBoundingClientRect();
   return [(e.clientX - r.left) / cropScale, (e.clientY - r.top) / cropScale];
 }
+let dragStart = null;
+function handles(){
+  const mids = [0,1,2,3].map(i => { const a = quad[i], b = quad[(i+1)%4]; return [(a[0]+b[0])/2, (a[1]+b[1])/2]; });
+  return quad.concat(mids);
+}
 cropCv.addEventListener('pointerdown', e => {
   const p = toSrc(e); let bi = -1, bd = 1e9;
-  quad.forEach((q,i) => { const d = Math.hypot((q[0]-p[0])*cropScale, (q[1]-p[1])*cropScale); if (d < bd){ bd = d; bi = i; } });
-  if (bi >= 0){ drag = bi; cropCv.setPointerCapture(e.pointerId); e.preventDefault();
-    quad[drag] = [clamp(p[0],0,src.width), clamp(p[1],0,src.height)]; drawCrop(); }
+  handles().forEach((q,i) => { const d = Math.hypot((q[0]-p[0])*cropScale, (q[1]-p[1])*cropScale); if (d < bd){ bd = d; bi = i; } });
+  if (bi >= 0){ drag = bi; dragStart = {p, q: quad.map(q => q.slice())}; cropCv.setPointerCapture(e.pointerId); e.preventDefault(); }
 });
 cropCv.addEventListener('pointermove', e => {
   if (drag < 0) return;
-  const p = toSrc(e);
-  quad[drag] = [clamp(p[0],0,src.width), clamp(p[1],0,src.height)];
+  const p = toSrc(e), dx = p[0]-dragStart.p[0], dy = p[1]-dragStart.p[1], q0 = dragStart.q;
+  const cl = (x,y) => [clamp(x,0,src.width), clamp(y,0,src.height)];
+  if (drag < 4) quad[drag] = cl(q0[drag][0]+dx, q0[drag][1]+dy);
+  else {
+    const i = drag-4, j = (i+1)%4, a = q0[i], b = q0[j];
+    const tx = b[0]-a[0], ty = b[1]-a[1], L = Math.hypot(tx,ty) || 1;
+    const s = dx*(-ty/L) + dy*(tx/L);
+    quad[i] = cl(a[0]-ty/L*s, a[1]+tx/L*s); quad[j] = cl(b[0]-ty/L*s, b[1]+tx/L*s);
+  }
   drawCrop();
 });
 ['pointerup','pointercancel'].forEach(t => cropCv.addEventListener(t, () => { drag = -1; }));
@@ -281,7 +294,7 @@ function setEngine(s){
   $('#eng').textContent = {
     loading:'자동 감지 엔진 불러오는 중… (처음 한 번, 약 10MB)',
     ready:'자동 감지 준비됨', fail:'자동 감지 엔진을 불러오지 못했습니다. 모서리를 직접 맞추세요.',
-    idle:'모서리 네 점을 손가락으로 끌어 맞추세요. 자동 감지는 버튼을 누르면 켜집니다.'
+    idle:'원(●)은 모서리 한 점, 네모(■)는 변 전체를 밀어 줍니다. 자동 감지는 버튼을 누르면 켜집니다.'
   }[s];
 }
 function ensureCV(){
@@ -310,36 +323,49 @@ function orderPts(pts){
           pts[sum.indexOf(Math.max(...sum))], pts[dif.indexOf(Math.max(...dif))]];
 }
 function detect(){
-  const s = Math.min(1, 600 / Math.max(src.width, src.height));
+  const s = Math.min(1, 700 / Math.max(src.width, src.height));
   const t = document.createElement('canvas');
   t.width = Math.round(src.width*s); t.height = Math.round(src.height*s);
   t.getContext('2d').drawImage(src, 0, 0, t.width, t.height);
-  const m = cv.imread(t), g = new cv.Mat(), e = new cv.Mat(), k = cv.Mat.ones(5,5,cv.CV_8U);
-  const cs = new cv.MatVector(), h = new cv.Mat();
-  let best = null, bestA = 0;
+  const imgA = t.width * t.height;
+  const mats = [], track = x => { mats.push(x); return x; };
+  let best = null;
   try {
+    const m = track(cv.imread(t)), g = track(new cv.Mat());
     cv.cvtColor(m, g, cv.COLOR_RGBA2GRAY);
     cv.GaussianBlur(g, g, new cv.Size(5,5), 0);
-    cv.Canny(g, e, 60, 160);
-    cv.dilate(e, e, k);
-    cv.findContours(e, cs, h, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
-    for (let i = 0; i < cs.size(); i++){
-      const c = cs.get(i), a = cv.contourArea(c);
-      if (a > bestA && a > t.width*t.height*0.15){
-        const ap = new cv.Mat();
-        cv.approxPolyDP(c, ap, 0.02*cv.arcLength(c, true), true);
-        if (ap.rows === 4 && cv.isContourConvex(ap)){
-          const d = ap.data32S;
-          best = [[d[0],d[1]],[d[2],d[3]],[d[4],d[5]],[d[6],d[7]]]; bestA = a;
+    const k = track(cv.Mat.ones(5,5,cv.CV_8U));
+    const e1 = track(new cv.Mat()); cv.Canny(g, e1, 30, 100); cv.morphologyEx(e1, e1, cv.MORPH_CLOSE, k);
+    const e2 = track(new cv.Mat()); cv.Canny(g, e2, 60, 160); cv.dilate(e2, e2, k);
+    const e3 = track(new cv.Mat()); cv.threshold(g, e3, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU); cv.morphologyEx(e3, e3, cv.MORPH_CLOSE, k);
+    const e4 = track(new cv.Mat()); cv.bitwise_not(e3, e4);
+    for (const v of [e1, e2, e3, e4]){
+      const cs = new cv.MatVector(), h = new cv.Mat();
+      cv.findContours(v, cs, h, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+      let bestA = 0, found = null;
+      for (let i = 0; i < cs.size(); i++){
+        const c = cs.get(i), a = cv.contourArea(c);
+        if (a > imgA*0.12 && a < imgA*0.97 && a > bestA){
+          const hull = new cv.Mat(); cv.convexHull(c, hull, false, true);
+          const per = cv.arcLength(hull, true);
+          let q4 = null;
+          for (const eps of [0.02, 0.03, 0.045, 0.06, 0.08]){
+            const ap = new cv.Mat(); cv.approxPolyDP(hull, ap, eps*per, true);
+            if (ap.rows === 4){ const d = ap.data32S; q4 = [[d[0],d[1]],[d[2],d[3]],[d[4],d[5]],[d[6],d[7]]]; }
+            const rows = ap.rows; ap.delete();
+            if (q4 || rows < 4) break;
+          }
+          if (!q4){ const pts = cv.RotatedRect.points(cv.minAreaRect(hull)); q4 = pts.map(p => [p.x, p.y]); }
+          found = q4; bestA = a; hull.delete();
         }
-        ap.delete();
+        c.delete();
       }
-      c.delete();
+      cs.delete(); h.delete();
+      if (found){ best = found; break; }
     }
-  } finally { m.delete(); g.delete(); e.delete(); k.delete(); cs.delete(); h.delete(); }
-  return best ? orderPts(best).map(p => [p[0]/s, p[1]/s]) : null;
-}
-function runAuto(silent){
+  } finally { mats.forEach(x => x.delete()); }
+  return best ? orderPts(best).map(p => [clamp(p[0]/s, 0, src.width), clamp(p[1]/s, 0, src.height)]) : null;
+}function runAuto(silent){
   try {
     const q = detect();
     if (q){ quad = q; drawCrop(); if (!silent) toast('문서 모서리를 찾았습니다.'); }
@@ -446,24 +472,31 @@ $('#fxAdd').onclick = () => {
 };
 
 /* ---------- 내보내기 ---------- */
-let outUrls = [];
-$('#toOut').onclick = async () => {
-  outUrls.forEach(u => URL.revokeObjectURL(u)); outUrls = [];
-  const list = $('#outList'); list.innerHTML = '';
-  $('#outCount').textContent = pages.length + ' page' + (pages.length === 1 ? '' : 's');
-  show('out');
-  for (let i = 0; i < pages.length; i++){
-    const blob = await new Promise(r => pages[i].canvas.toBlob(r, 'image/jpeg', 0.9));
-    const url = URL.createObjectURL(blob); outUrls.push(url);
-    const f = document.createElement('figure'), im = new Image(), cap = document.createElement('figcaption');
-    im.src = url; im.alt = (i+1) + '쪽'; cap.textContent = 'P' + (i+1) + ' · ' + pages[i].canvas.width + '×' + pages[i].canvas.height;
-    f.append(im, cap); list.append(f);
-  }
-};
-$('#outBack').onclick = () => show('home');
+let outUrls = [], outBlobs = [], pdfBlob = null;
 function stamp(){
   const n = new Date(), z = v => String(v).padStart(2,'0');
   return 'scan-' + n.getFullYear() + z(n.getMonth()+1) + z(n.getDate()) + '-' + z(n.getHours()) + z(n.getMinutes());
+}
+function jpgFile(i){ return new File([outBlobs[i]], stamp() + '-p' + (i+1) + '.jpg', {type:'image/jpeg'}); }
+async function saveFiles(files){
+  try {
+    const dl = window.claude && window.claude.use ? await window.claude.use('downloads') : null;
+    if (dl){
+      for (const f of files) await dl.save({filename: f.name, data: f});
+      toast('저장했습니다.'); return;
+    }
+  } catch (err) { if (err && err.code === 'declined') return; }
+  if (navigator.canShare && navigator.canShare({files})){
+    try { await navigator.share({files}); return; }
+    catch (err) { if (err && err.name === 'AbortError') return; }
+  }
+  for (const f of files){
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(f); a.download = f.name;
+    document.body.appendChild(a); a.click(); a.remove();
+    await new Promise(r => setTimeout(r, 300));
+  }
+  toast('저장을 시도했습니다. 저장되지 않으면 이미지를 길게 눌러 "사진에 추가"를 고르세요.', 5000);
 }
 function makePdf(){
   const J = window.jspdf && window.jspdf.jsPDF; if (!J) return null;
@@ -478,29 +511,32 @@ function makePdf(){
   });
   return doc.output('blob');
 }
-$('#pdfBtn').onclick = async () => {
-  toast('PDF 만드는 중…', 0); await nextFrame();
-  const blob = makePdf();
-  if (!blob){ toast('PDF 도구를 불러오지 못했습니다. 이미지를 길게 눌러 저장하세요.', 4000); return; }
-  const file = new File([blob], stamp() + '.pdf', {type:'application/pdf'});
-  try {
-    const dl = window.claude && window.claude.use ? await window.claude.use('downloads') : null;
-    if (dl){
-      await dl.save({filename: file.name, data: blob});
-      toast('PDF를 저장했습니다.'); return;
-    }
-  } catch (err) {
-    if (err && err.code === 'declined'){ $('#toast').hidden = true; return; }
+$('#toOut').onclick = async () => {
+  outUrls.forEach(u => URL.revokeObjectURL(u)); outUrls = []; outBlobs = []; pdfBlob = null;
+  const list = $('#outList'); list.innerHTML = '';
+  $('#outCount').textContent = pages.length + ' page' + (pages.length === 1 ? '' : 's');
+  $('#pdfBtn').disabled = true; $('#pdfBtn').textContent = 'PDF 준비 중…'; $('#imgBtn').disabled = true;
+  show('out');
+  for (let i = 0; i < pages.length; i++){
+    const blob = await new Promise(r => pages[i].canvas.toBlob(r, 'image/jpeg', 0.92));
+    outBlobs.push(blob);
+    const url = URL.createObjectURL(blob); outUrls.push(url);
+    const f = document.createElement('figure'), im = new Image(), cap = document.createElement('figcaption'), sv = document.createElement('button');
+    im.src = url; im.alt = (i+1) + '쪽'; cap.textContent = 'P' + (i+1) + ' · ' + pages[i].canvas.width + '×' + pages[i].canvas.height;
+    sv.className = 'btn sv'; sv.dataset.i = i; sv.textContent = '이 페이지 이미지 저장';
+    f.append(im, cap, sv); list.append(f);
   }
-  if (navigator.canShare && navigator.canShare({files:[file]})){
-    try { await navigator.share({files:[file]}); $('#toast').hidden = true; return; }
-    catch (err) { if (err && err.name === 'AbortError'){ $('#toast').hidden = true; return; } }
-  }
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob); a.download = file.name;
-  document.body.appendChild(a); a.click(); a.remove();
-  toast('PDF 저장을 시도했습니다. 저장되지 않으면 아래 이미지를 길게 눌러 저장하세요.', 5000);
+  $('#imgBtn').disabled = false;
+  await nextFrame();
+  pdfBlob = makePdf();
+  $('#pdfBtn').textContent = pdfBlob ? 'PDF 저장' : 'PDF 사용 불가';
+  $('#pdfBtn').disabled = !pdfBlob;
 };
-
+$('#outBack').onclick = () => show('home');
+$('#pdfBtn').onclick = () => { if (pdfBlob) saveFiles([new File([pdfBlob], stamp() + '.pdf', {type:'application/pdf'})]); };
+$('#imgBtn').onclick = () => { if (outBlobs.length) saveFiles(outBlobs.map((b,i) => jpgFile(i))); };
+$('#outList').addEventListener('click', e => {
+  const b = e.target.closest('.sv'); if (b) saveFiles([jpgFile(+b.dataset.i)]);
+});
 renderHome();
 </script>
