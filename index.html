@@ -327,9 +327,10 @@ function detect(){
   const t = document.createElement('canvas');
   t.width = Math.round(src.width*s); t.height = Math.round(src.height*s);
   t.getContext('2d').drawImage(src, 0, 0, t.width, t.height);
-  const imgA = t.width * t.height;
+  const W = t.width, H = t.height, imgA = W * H;
   const mats = [], track = x => { mats.push(x); return x; };
-  let best = null;
+  let best = null, bestScore = 0;
+  const area4 = q => Math.abs(q.reduce((a,p,i) => { const n = q[(i+1)%4]; return a + p[0]*n[1] - n[0]*p[1]; }, 0)) / 2;
   try {
     const m = track(cv.imread(t)), g = track(new cv.Mat());
     cv.cvtColor(m, g, cv.COLOR_RGBA2GRAY);
@@ -337,31 +338,59 @@ function detect(){
     const k = track(cv.Mat.ones(5,5,cv.CV_8U));
     const e1 = track(new cv.Mat()); cv.Canny(g, e1, 30, 100); cv.morphologyEx(e1, e1, cv.MORPH_CLOSE, k);
     const e2 = track(new cv.Mat()); cv.Canny(g, e2, 60, 160); cv.dilate(e2, e2, k);
-    const e3 = track(new cv.Mat()); cv.threshold(g, e3, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU); cv.morphologyEx(e3, e3, cv.MORPH_CLOSE, k);
+    const e3 = track(new cv.Mat()), otsu = cv.threshold(g, e3, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU); cv.morphologyEx(e3, e3, cv.MORPH_CLOSE, k);
+    // 밝은 물건(노란 상자 등)과 흰 종이를 가르기 위해 더 높은 기준으로 한 번 더 나눈다.
+    const e7 = track(new cv.Mat()); cv.threshold(g, e7, (otsu + 255) / 2, 255, cv.THRESH_BINARY);
     const e4 = track(new cv.Mat()); cv.bitwise_not(e3, e4);
-    for (const v of [e1, e2, e3, e4]){
+    // 후보 사각형의 안쪽과 바깥 테두리 띠의 밝기 차이: 클수록 문서 경계에 가깝다.
+    const r = Math.max(3, Math.round(Math.max(W,H) * 0.02));
+    const kk = track(cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(2*r+1, 2*r+1)));
+    const contrast = q => {
+      const mask = cv.Mat.zeros(H, W, cv.CV_8UC1), inner = new cv.Mat(), outer = new cv.Mat(), ring = new cv.Mat();
+      const pts = cv.matFromArray(4, 1, cv.CV_32SC2, q.flat().map(Math.round));
+      try {
+        cv.fillConvexPoly(mask, pts, new cv.Scalar(255));
+        cv.erode(mask, inner, kk); cv.dilate(mask, outer, kk); cv.subtract(outer, mask, ring);
+        return Math.abs(cv.mean(g, inner)[0] - cv.mean(g, ring)[0]);
+      } finally { mask.delete(); inner.delete(); outer.delete(); ring.delete(); pts.delete(); }
+    };
+    // 윤곽이 사각형을 꽉 채우지 못하면(옆 물건과 붙은 덩어리 등) 문서가 아니라고 본다.
+    const consider = (q, ca) => {
+      const a = area4(q); if (a < imgA*0.12) return;
+      const fill = ca / a; if (fill < 0.85) return;
+      const c = contrast(q);
+      const sc = c * Math.pow(Math.min(1, fill), 3) * (0.5 + 0.5*Math.sqrt(Math.min(1, a/imgA)));
+      if (c >= 15 && sc > bestScore){ bestScore = sc; best = q; }
+    };
+    const e5 = track(new cv.Mat()); cv.morphologyEx(e3, e5, cv.MORPH_OPEN, kk);
+    const e6 = track(new cv.Mat()); cv.morphologyEx(e4, e6, cv.MORPH_OPEN, kk);
+    cv.morphologyEx(e7, e7, cv.MORPH_OPEN, kk);
+    for (const v of [e1, e2, e3, e4, e5, e6, e7]){
       const cs = new cv.MatVector(), h = new cv.Mat();
       cv.findContours(v, cs, h, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-      let bestA = 0, found = null;
+      const list = [];
       for (let i = 0; i < cs.size(); i++){
         const c = cs.get(i), a = cv.contourArea(c);
-        if (a > imgA*0.12 && a < imgA*0.97 && a > bestA){
+        if (a > imgA*0.12 && a < imgA*0.97) list.push({c, a}); else c.delete();
+      }
+      list.sort((x,y) => y.a - x.a);
+      list.forEach(({c, a}, idx) => {
+        if (idx < 4){
           const hull = new cv.Mat(); cv.convexHull(c, hull, false, true);
           const per = cv.arcLength(hull, true);
-          let q4 = null;
           for (const eps of [0.02, 0.03, 0.045, 0.06, 0.08]){
             const ap = new cv.Mat(); cv.approxPolyDP(hull, ap, eps*per, true);
-            if (ap.rows === 4){ const d = ap.data32S; q4 = [[d[0],d[1]],[d[2],d[3]],[d[4],d[5]],[d[6],d[7]]]; }
-            const rows = ap.rows; ap.delete();
-            if (q4 || rows < 4) break;
+            const rows = ap.rows, d = ap.data32S;
+            if (rows === 4) consider([[d[0],d[1]],[d[2],d[3]],[d[4],d[5]],[d[6],d[7]]], a);
+            ap.delete();
+            if (rows <= 4) break;
           }
-          if (!q4){ const pts = cv.RotatedRect.points(cv.minAreaRect(hull)); q4 = pts.map(p => [p.x, p.y]); }
-          found = q4; bestA = a; hull.delete();
+          consider(cv.RotatedRect.points(cv.minAreaRect(hull)).map(p => [p.x, p.y]), a);
+          hull.delete();
         }
         c.delete();
-      }
+      });
       cs.delete(); h.delete();
-      if (found){ best = found; break; }
     }
   } finally { mats.forEach(x => x.delete()); }
   return best ? orderPts(best).map(p => [clamp(p[0]/s, 0, src.width), clamp(p[1]/s, 0, src.height)]) : null;
