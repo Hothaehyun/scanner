@@ -197,7 +197,7 @@ $('#file').addEventListener('change', async e => {
     const url = URL.createObjectURL(f);
     const img = new Image();
     await new Promise((ok, no) => { img.onload = ok; img.onerror = no; img.src = url; });
-    const k = Math.min(1, 2400 / Math.max(img.naturalWidth, img.naturalHeight));
+    const k = Math.min(1, 3600 / Math.max(img.naturalWidth, img.naturalHeight), Math.sqrt(10e6 / (img.naturalWidth * img.naturalHeight)));
     src = document.createElement('canvas');
     src.width = Math.round(img.naturalWidth * k); src.height = Math.round(img.naturalHeight * k);
     src.getContext('2d').drawImage(img, 0, 0, src.width, src.height);
@@ -377,7 +377,7 @@ function detect(){
 function warp(){
   const [p0,p1,p2,p3] = quad;
   const W0 = Math.max(dist(p0,p1), dist(p3,p2)), H0 = Math.max(dist(p0,p3), dist(p1,p2));
-  const k = Math.min(1, 1700 / Math.max(W0, H0));
+  const k = Math.min(1, 3000 / Math.max(W0, H0), Math.sqrt(7e6 / (W0 * H0)));
   const W = Math.max(2, Math.round(W0*k)), H = Math.max(2, Math.round(H0*k));
   const dx1 = p1[0]-p2[0], dx2 = p3[0]-p2[0], dx3 = p0[0]-p1[0]+p2[0]-p3[0];
   const dy1 = p1[1]-p2[1], dy2 = p3[1]-p2[1], dy3 = p0[1]-p1[1]+p2[1]-p3[1];
@@ -413,7 +413,10 @@ function applyFilter(bc, m){
   const w = bc.width, h = bc.height;
   const o = document.createElement('canvas'); o.width = w; o.height = h;
   const ctx = o.getContext('2d'); ctx.drawImage(bc, 0, 0);
-  if (m === 'color') return o;
+  if (m === 'color'){
+    const id0 = ctx.getImageData(0,0,w,h); sharpen(id0.data, w, h, 0.5); ctx.putImageData(id0, 0, 0);
+    return o;
+  }
   const id = ctx.getImageData(0,0,w,h), d = id.data;
   const gray = new Uint8ClampedArray(w*h);
   for (let i = 0; i < w*h; i++) gray[i] = (d[i*4]*77 + d[i*4+1]*151 + d[i*4+2]*28) >> 8;
@@ -442,8 +445,22 @@ function applyFilter(bc, m){
       }
     }
   }
+  if (m !== 'bw') sharpen(d, w, h, 0.6);
   ctx.putImageData(id, 0, 0);
   return o;
+}
+function sharpen(d, w, h, amt){
+  const c = new Uint8ClampedArray(d), w4 = w*4;
+  for (let y = 1; y < h-1; y++){
+    for (let x = 1; x < w-1; x++){
+      const p = (y*w+x)*4;
+      for (let ch = 0; ch < 3; ch++){
+        const i = p+ch;
+        const bl = (c[i-w4-4]+c[i-w4]+c[i-w4+4]+c[i-4]+c[i]+c[i+4]+c[i+w4-4]+c[i+w4]+c[i+w4+4]) / 9;
+        d[i] = c[i] + amt*(c[i]-bl);
+      }
+    }
+  }
 }
 function renderFx(){
   fxResult = applyFilter(base, mode);
@@ -463,11 +480,15 @@ async function spin(dir){ toast('회전 중…', 0); await nextFrame(); base = r
 $('#rotL').onclick = () => spin(-1);
 $('#rotR').onclick = () => spin(1);
 $('#fxBack').onclick = () => { show('crop'); layoutCrop(); };
-$('#fxAdd').onclick = () => {
+$('#fxAdd').onclick = async () => {
+  // 메모리 절약: 페이지는 캔버스 대신 JPEG 파일(blob)로 보관한다.
+  $('#fxAdd').disabled = true; toast('저장 중…', 0);
   const k = 240 / Math.max(fxResult.width, fxResult.height);
   const t = document.createElement('canvas'); t.width = Math.round(fxResult.width*k); t.height = Math.round(fxResult.height*k);
   t.getContext('2d').drawImage(fxResult, 0, 0, t.width, t.height);
-  pages.push({canvas: fxResult, thumb: t.toDataURL('image/jpeg', 0.7)});
+  const blob = await new Promise(r => fxResult.toBlob(r, 'image/jpeg', 0.95));
+  pages.push({blob, w: fxResult.width, h: fxResult.height, thumb: t.toDataURL('image/jpeg', 0.7)});
+  $('#fxAdd').disabled = false;
   renderHome(); show('home'); toast(pages.length + '쪽을 추가했습니다.');
 };
 
@@ -498,17 +519,16 @@ async function saveFiles(files){
   }
   toast('저장을 시도했습니다. 저장되지 않으면 이미지를 길게 눌러 "사진에 추가"를 고르세요.', 5000);
 }
-function makePdf(){
-  const J = window.jspdf && window.jspdf.jsPDF; if (!J) return null;
+async function makePdf(){
+  const J = window.jspdf && window.jspdf.jsPDF; if (!J || !pages.length) return null;
   let doc;
-  pages.forEach((p,i) => {
-    const land = p.canvas.width > p.canvas.height, pw = land ? 297 : 210, ph = land ? 210 : 297, mg = 6;
+  for (let i = 0; i < pages.length; i++){
+    const p = pages[i], land = p.w > p.h, pw = land ? 297 : 210, ph = land ? 210 : 297, mg = 6;
     if (i === 0) doc = new J({unit:'mm', format:'a4', orientation: land ? 'l' : 'p'});
     else doc.addPage('a4', land ? 'l' : 'p');
-    const s = Math.min((pw-2*mg)/p.canvas.width, (ph-2*mg)/p.canvas.height);
-    const iw = p.canvas.width*s, ih = p.canvas.height*s;
-    doc.addImage(p.canvas.toDataURL('image/jpeg', 0.85), 'JPEG', (pw-iw)/2, (ph-ih)/2, iw, ih);
-  });
+    const s = Math.min((pw-2*mg)/p.w, (ph-2*mg)/p.h), iw = p.w*s, ih = p.h*s;
+    doc.addImage(new Uint8Array(await p.blob.arrayBuffer()), 'JPEG', (pw-iw)/2, (ph-ih)/2, iw, ih);
+  }
   return doc.output('blob');
 }
 $('#toOut').onclick = async () => {
@@ -518,17 +538,17 @@ $('#toOut').onclick = async () => {
   $('#pdfBtn').disabled = true; $('#pdfBtn').textContent = 'PDF 준비 중…'; $('#imgBtn').disabled = true;
   show('out');
   for (let i = 0; i < pages.length; i++){
-    const blob = await new Promise(r => pages[i].canvas.toBlob(r, 'image/jpeg', 0.92));
+    const blob = pages[i].blob;
     outBlobs.push(blob);
     const url = URL.createObjectURL(blob); outUrls.push(url);
     const f = document.createElement('figure'), im = new Image(), cap = document.createElement('figcaption'), sv = document.createElement('button');
-    im.src = url; im.alt = (i+1) + '쪽'; cap.textContent = 'P' + (i+1) + ' · ' + pages[i].canvas.width + '×' + pages[i].canvas.height;
+    im.src = url; im.alt = (i+1) + '쪽'; cap.textContent = 'P' + (i+1) + ' · ' + pages[i].w + '×' + pages[i].h;
     sv.className = 'btn sv'; sv.dataset.i = i; sv.textContent = '이 페이지 이미지 저장';
     f.append(im, cap, sv); list.append(f);
   }
   $('#imgBtn').disabled = false;
   await nextFrame();
-  pdfBlob = makePdf();
+  pdfBlob = await makePdf();
   $('#pdfBtn').textContent = pdfBlob ? 'PDF 저장' : 'PDF 사용 불가';
   $('#pdfBtn').disabled = !pdfBlob;
 };
