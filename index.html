@@ -81,6 +81,7 @@ p{margin:0}
 
   <section class="view" id="v-home">
     <div class="top"><h1>포켓 스캐너</h1><span class="tag" id="count">0 pages</span></div>
+    <p class="tag" id="ver"></p>
     <div id="empty" class="empty">
       <p><strong>종이를 책상에 놓고 한 장씩 찍으세요.</strong></p>
       <ol class="hint">
@@ -161,7 +162,10 @@ const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
 const dist = (p,q) => Math.hypot(p[0]-q[0], p[1]-q[1]);
 const nextFrame = () => new Promise(r => setTimeout(r, 30));
 
-const pages = [];            // {canvas, thumb}
+// 수정할 때마다 번호와 날짜를 올린다. 아이폰 화면 맨 위에 표시되어 반영 여부를 확인할 수 있다.
+const VERSION = 'v7 · 2026-10-28 · 감지 점수제';
+$('#ver').textContent = VERSION;
+const pages = [];            // {blob, w, h, thumb}
 let src = null;              // 원본 사진(축소본) canvas
 let quad = [];               // [tl,tr,br,bl] 원본 좌표
 let base = null;             // 펴진 문서 canvas(원본색)
