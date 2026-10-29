@@ -136,8 +136,13 @@ p{margin:0}
     <div class="top"><h1>내보내기</h1><span class="tag" id="outCount"></span></div>
     <div class="row">
       <button class="btn primary" id="pdfBtn" disabled>PDF 준비 중…</button>
-      <button class="btn" id="imgBtn" disabled>이미지 전체 저장</button>
+      <button class="btn" id="imgBtn" disabled>이미지 저장</button>
     </div>
+    <div class="chips" id="modeChips">
+      <button class="chip" data-mode="each" aria-pressed="true">페이지별로 저장</button>
+      <button class="chip" data-mode="one" aria-pressed="false">한 장으로 합쳐 저장</button>
+    </div>
+    <p class="hint" id="mergeNote" hidden></p>
     <div class="row"><button class="btn" id="outBack">돌아가기</button></div>
     <p class="hint">저장 창에서 &lsquo;이미지 저장&rsquo;을 고르면 사진 앱에 들어갑니다. 안 되면 아래 이미지를 길게 눌러 &lsquo;사진에 추가&rsquo;를 고르세요.</p>
     <div class="out" id="outList" style="display:flex;flex-direction:column;gap:16px"></div>
@@ -163,7 +168,7 @@ const dist = (p,q) => Math.hypot(p[0]-q[0], p[1]-q[1]);
 const nextFrame = () => new Promise(r => setTimeout(r, 30));
 
 // 수정할 때마다 번호와 날짜를 올린다. 아이폰 화면 맨 위에 표시되어 반영 여부를 확인할 수 있다.
-const VERSION = 'v7 · 2026-10-28 · 감지 점수제';
+const VERSION = 'v8 · 2026-10-29 · 한 장 합치기 저장';
 $('#ver').textContent = VERSION;
 const pages = [];            // {blob, w, h, thumb}
 let src = null;              // 원본 사진(축소본) canvas
@@ -565,7 +570,7 @@ async function makePdf(){
   return doc.output('blob');
 }
 $('#toOut').onclick = async () => {
-  outUrls.forEach(u => URL.revokeObjectURL(u)); outUrls = []; outBlobs = []; pdfBlob = null;
+  outUrls.forEach(u => URL.revokeObjectURL(u)); outUrls = []; outBlobs = []; pdfBlob = null; merged = null; $('#mergeNote').hidden = true;
   const list = $('#outList'); list.innerHTML = '';
   $('#outCount').textContent = pages.length + ' page' + (pages.length === 1 ? '' : 's');
   $('#pdfBtn').disabled = true; $('#pdfBtn').textContent = 'PDF 준비 중…'; $('#imgBtn').disabled = true;
@@ -584,10 +589,51 @@ $('#toOut').onclick = async () => {
   pdfBlob = await makePdf();
   $('#pdfBtn').textContent = pdfBlob ? 'PDF 저장' : 'PDF 사용 불가';
   $('#pdfBtn').disabled = !pdfBlob;
+  if (pages.length > 1){ try { merged = await mergePages(); showMergeNote(); } catch (err) { merged = null; } }
 };
 $('#outBack').onclick = () => show('home');
 $('#pdfBtn').onclick = () => { if (pdfBlob) saveFiles([new File([pdfBlob], stamp() + '.pdf', {type:'application/pdf'})]); };
-$('#imgBtn').onclick = () => { if (outBlobs.length) saveFiles(outBlobs.map((b,i) => jpgFile(i))); };
+// 여러 페이지를 세로로 이어 붙인 한 장짜리 이미지. 사파리 캔버스 한도(약 1670만 픽셀) 안에 맞춘다.
+let saveMode = 'each', merged = null;
+async function decode(b){
+  if (window.createImageBitmap) return createImageBitmap(b);
+  const u = URL.createObjectURL(b), im = new Image();
+  await new Promise((ok, no) => { im.onload = ok; im.onerror = no; im.src = u; });
+  URL.revokeObjectURL(u); return im;
+}
+async function mergePages(){
+  const W0 = Math.max(...pages.map(p => p.w));
+  const hs = pages.map(p => Math.round(p.h * W0 / p.w)), H0 = hs.reduce((a,b) => a + b, 0);
+  const k = Math.min(1, Math.sqrt(14e6 / (W0 * H0)), 16000 / H0);
+  const hk = hs.map(h => Math.round(h * k)), W = Math.round(W0 * k), H = hk.reduce((a,b) => a + b, 0);
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, W, H);
+  let y = 0;
+  for (let i = 0; i < pages.length; i++){
+    const bmp = await decode(pages[i].blob);
+    x.drawImage(bmp, 0, y, W, hk[i]); if (bmp.close) bmp.close(); y += hk[i];
+  }
+  const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.92));
+  return {blob, w: W, h: H, scaled: k < 1};
+}
+function showMergeNote(){
+  const n = $('#mergeNote');
+  n.hidden = !(saveMode === 'one' && merged && merged.scaled);
+  if (!n.hidden) n.textContent = '페이지가 많아 한 장으로 합칠 때 해상도를 줄였습니다(가로 ' + merged.w + 'px). 선명하게 보관하려면 "페이지별로 저장"을 쓰세요.';
+}
+$('#modeChips').addEventListener('click', e => {
+  const b = e.target.closest('.chip'); if (!b) return;
+  saveMode = b.dataset.mode;
+  document.querySelectorAll('#modeChips .chip').forEach(c => c.setAttribute('aria-pressed', c.dataset.mode === saveMode));
+  showMergeNote();
+});
+$('#imgBtn').onclick = async () => {
+  if (!outBlobs.length) return;
+  if (saveMode === 'one' && pages.length > 1){
+    if (!merged){ toast('한 장으로 합치는 중…', 0); merged = await mergePages(); $('#toast').hidden = true; showMergeNote(); }
+    saveFiles([new File([merged.blob], stamp() + '-all.jpg', {type:'image/jpeg'})]);
+  } else saveFiles(outBlobs.map((b,i) => jpgFile(i)));
+};
 $('#outList').addEventListener('click', e => {
   const b = e.target.closest('.sv'); if (b) saveFiles([jpgFile(+b.dataset.i)]);
 });
