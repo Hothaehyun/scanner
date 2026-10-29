@@ -75,6 +75,14 @@ p{margin:0}
   bottom:calc(16px + env(safe-area-inset-bottom,0px));
   background:var(--fg); color:var(--bg); padding:10px 16px; border-radius:10px; font-size:.9rem; text-align:center;
 }
+.opt{display:flex; flex-direction:column; gap:8px}
+.lab{font-weight:600; font-size:.95rem}
+.plan{font-size:.9rem; color:var(--muted)}
+.prog{font-family:var(--mono); font-size:.8rem; color:var(--muted); overflow-wrap:anywhere}
+.res{display:flex; flex-direction:column; gap:10px; border:1px solid var(--line); border-radius:12px; padding:12px; background:var(--surface)}
+.res .f{display:flex; gap:10px; align-items:center; justify-content:space-between}
+.res .fn{font-family:var(--mono); font-size:.78rem; overflow-wrap:anywhere; min-width:0}
+.res .btn{min-height:40px; padding:0 14px; flex:0 0 auto}
 </style>
 
 <div class="app">
@@ -134,24 +142,41 @@ p{margin:0}
 
   <section class="view" id="v-out" hidden>
     <div class="top"><h1>내보내기</h1><span class="tag" id="outCount"></span></div>
-    <div class="row">
-      <button class="btn primary" id="pdfBtn" disabled>PDF 준비 중…</button>
-      <button class="btn" id="imgBtn" disabled>이미지 저장</button>
+    <div class="opt">
+      <span class="lab">1. 파일 형식</span>
+      <div class="chips opts" data-opt="fmt">
+        <button class="chip" data-v="pdf" aria-pressed="true">PDF</button>
+        <button class="chip" data-v="img" aria-pressed="false">이미지(JPG)</button>
+      </div>
     </div>
-    <div class="chips" id="modeChips">
-      <button class="chip" data-mode="each" aria-pressed="true">페이지별로 저장</button>
-      <button class="chip" data-mode="one" aria-pressed="false">한 장으로 합쳐 저장</button>
+    <div class="opt">
+      <span class="lab">2. 묶는 방식</span>
+      <div class="chips opts" data-opt="lay">
+        <button class="chip" data-v="each" aria-pressed="false">페이지별로 따로</button>
+        <button class="chip" data-v="one" aria-pressed="true">한 장(한 파일)으로 합쳐서</button>
+      </div>
     </div>
+    <div class="opt">
+      <span class="lab">3. 글자 인식(OCR)</span>
+      <div class="chips opts" data-opt="ocr">
+        <button class="chip" data-v="off" aria-pressed="true">사용 안 함</button>
+        <button class="chip" data-v="on" aria-pressed="false">사용</button>
+      </div>
+      <p class="hint">켜면 글자를 읽어 텍스트(.txt)를 함께 만들고, PDF에는 글자 검색·복사 층을 넣습니다. 처음 한 번 인식 데이터를 내려받고, 한 쪽에 수십 초가 걸릴 수 있습니다.</p>
+    </div>
+    <p class="plan" id="planNote"></p>
+    <button class="btn primary" id="extractBtn">추출</button>
+    <p class="prog" id="prog" hidden></p>
+    <div class="res" id="results" hidden></div>
     <p class="hint" id="mergeNote" hidden></p>
     <div class="row"><button class="btn" id="outBack">돌아가기</button></div>
-    <p class="hint">저장 창에서 &lsquo;이미지 저장&rsquo;을 고르면 사진 앱에 들어갑니다. 안 되면 아래 이미지를 길게 눌러 &lsquo;사진에 추가&rsquo;를 고르세요.</p>
+    <p class="hint">아래는 각 페이지 미리보기입니다. 이미지를 길게 눌러 사진에 바로 저장할 수도 있습니다.</p>
     <div class="out" id="outList" style="display:flex;flex-direction:column;gap:16px"></div>
   </section>
-
 </div>
 <div class="toast" id="toast" hidden></div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
 <script>
 const $ = s => document.querySelector(s);
 const views = {home:$('#v-home'), crop:$('#v-crop'), fx:$('#v-fx'), out:$('#v-out')};
@@ -168,7 +193,7 @@ const dist = (p,q) => Math.hypot(p[0]-q[0], p[1]-q[1]);
 const nextFrame = () => new Promise(r => setTimeout(r, 30));
 
 // 수정할 때마다 번호와 날짜를 올린다. 아이폰 화면 맨 위에 표시되어 반영 여부를 확인할 수 있다.
-const VERSION = 'v8 · 2026-10-29 · 한 장 합치기 저장';
+const VERSION = 'v9 · 2026-10-29 · OCR · 추출 방식 개편';
 $('#ver').textContent = VERSION;
 const pages = [];            // {blob, w, h, thumb}
 let src = null;              // 원본 사진(축소본) canvas
@@ -531,7 +556,8 @@ $('#fxAdd').onclick = async () => {
 };
 
 /* ---------- 내보내기 ---------- */
-let outUrls = [], outBlobs = [], pdfBlob = null;
+let outUrls = [], outBlobs = [], outFiles = [];
+const opt = {fmt:'pdf', lay:'one', ocr:'off'};
 function stamp(){
   const n = new Date(), z = v => String(v).padStart(2,'0');
   return 'scan-' + n.getFullYear() + z(n.getMonth()+1) + z(n.getDate()) + '-' + z(n.getHours()) + z(n.getMinutes());
@@ -557,50 +583,13 @@ async function saveFiles(files){
   }
   toast('저장을 시도했습니다. 저장되지 않으면 이미지를 길게 눌러 "사진에 추가"를 고르세요.', 5000);
 }
-async function makePdf(){
-  const J = window.jspdf && window.jspdf.jsPDF; if (!J || !pages.length) return null;
-  let doc;
-  for (let i = 0; i < pages.length; i++){
-    const p = pages[i], land = p.w > p.h, pw = land ? 297 : 210, ph = land ? 210 : 297, mg = 6;
-    if (i === 0) doc = new J({unit:'mm', format:'a4', orientation: land ? 'l' : 'p'});
-    else doc.addPage('a4', land ? 'l' : 'p');
-    const s = Math.min((pw-2*mg)/p.w, (ph-2*mg)/p.h), iw = p.w*s, ih = p.h*s;
-    doc.addImage(new Uint8Array(await p.blob.arrayBuffer()), 'JPEG', (pw-iw)/2, (ph-ih)/2, iw, ih);
-  }
-  return doc.output('blob');
-}
-$('#toOut').onclick = async () => {
-  outUrls.forEach(u => URL.revokeObjectURL(u)); outUrls = []; outBlobs = []; pdfBlob = null; merged = null; $('#mergeNote').hidden = true;
-  const list = $('#outList'); list.innerHTML = '';
-  $('#outCount').textContent = pages.length + ' page' + (pages.length === 1 ? '' : 's');
-  $('#pdfBtn').disabled = true; $('#pdfBtn').textContent = 'PDF 준비 중…'; $('#imgBtn').disabled = true;
-  show('out');
-  for (let i = 0; i < pages.length; i++){
-    const blob = pages[i].blob;
-    outBlobs.push(blob);
-    const url = URL.createObjectURL(blob); outUrls.push(url);
-    const f = document.createElement('figure'), im = new Image(), cap = document.createElement('figcaption'), sv = document.createElement('button');
-    im.src = url; im.alt = (i+1) + '쪽'; cap.textContent = 'P' + (i+1) + ' · ' + pages[i].w + '×' + pages[i].h;
-    sv.className = 'btn sv'; sv.dataset.i = i; sv.textContent = '이 페이지 이미지 저장';
-    f.append(im, cap, sv); list.append(f);
-  }
-  $('#imgBtn').disabled = false;
-  await nextFrame();
-  pdfBlob = await makePdf();
-  $('#pdfBtn').textContent = pdfBlob ? 'PDF 저장' : 'PDF 사용 불가';
-  $('#pdfBtn').disabled = !pdfBlob;
-  if (pages.length > 1){ try { merged = await mergePages(); showMergeNote(); } catch (err) { merged = null; } }
-};
-$('#outBack').onclick = () => show('home');
-$('#pdfBtn').onclick = () => { if (pdfBlob) saveFiles([new File([pdfBlob], stamp() + '.pdf', {type:'application/pdf'})]); };
-// 여러 페이지를 세로로 이어 붙인 한 장짜리 이미지. 사파리 캔버스 한도(약 1670만 픽셀) 안에 맞춘다.
-let saveMode = 'each', merged = null;
 async function decode(b){
   if (window.createImageBitmap) return createImageBitmap(b);
   const u = URL.createObjectURL(b), im = new Image();
   await new Promise((ok, no) => { im.onload = ok; im.onerror = no; im.src = u; });
   URL.revokeObjectURL(u); return im;
 }
+// 여러 페이지를 세로로 이어 붙인 한 장짜리 이미지. 사파리 캔버스 한도(약 1670만 픽셀) 안에 맞춘다.
 async function mergePages(){
   const W0 = Math.max(...pages.map(p => p.w));
   const hs = pages.map(p => Math.round(p.h * W0 / p.w)), H0 = hs.reduce((a,b) => a + b, 0);
@@ -616,24 +605,161 @@ async function mergePages(){
   const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.92));
   return {blob, w: W, h: H, scaled: k < 1};
 }
-function showMergeNote(){
-  const n = $('#mergeNote');
-  n.hidden = !(saveMode === 'one' && merged && merged.scaled);
-  if (!n.hidden) n.textContent = '페이지가 많아 한 장으로 합칠 때 해상도를 줄였습니다(가로 ' + merged.w + 'px). 선명하게 보관하려면 "페이지별로 저장"을 쓰세요.';
+async function buildPdf(idx, ocrPdfs){
+  const doc = await PDFLib.PDFDocument.create();
+  for (const i of idx){
+    const p = pages[i], land = p.w > p.h, pw = land ? 841.89 : 595.28, ph = land ? 595.28 : 841.89, mg = 17;
+    const s = Math.min((pw-2*mg)/p.w, (ph-2*mg)/p.h), iw = p.w*s, ih = p.h*s, x = (pw-iw)/2, y = (ph-ih)/2;
+    const page = doc.addPage([pw, ph]);
+    const img = await doc.embedJpg(new Uint8Array(await p.blob.arrayBuffer()));
+    page.drawImage(img, {x, y, width: iw, height: ih});
+    if (ocrPdfs && ocrPdfs[i]){
+      const [emb] = await doc.embedPdf(ocrPdfs[i], [0]);
+      page.drawPage(emb, {x, y, width: iw, height: ih});
+    }
+  }
+  return new Blob([await doc.save()], {type:'application/pdf'});
 }
-$('#modeChips').addEventListener('click', e => {
-  const b = e.target.closest('.chip'); if (!b) return;
-  saveMode = b.dataset.mode;
-  document.querySelectorAll('#modeChips .chip').forEach(c => c.setAttribute('aria-pressed', c.dataset.mode === saveMode));
-  showMergeNote();
+
+/* ---------- OCR (Tesseract.js, 선택 기능) ---------- */
+const TESS_SRC = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+let tessP = null;
+function loadTess(){
+  if (window.Tesseract) return Promise.resolve();
+  if (!tessP){
+    tessP = new Promise((ok, no) => {
+      const s = document.createElement('script'); s.src = TESS_SRC; s.onload = ok;
+      s.onerror = () => { tessP = null; no(new Error('OCR 엔진을 불러오지 못했습니다.')); };
+      document.head.appendChild(s);
+    });
+  }
+  return tessP;
+}
+async function ocrInput(p){
+  const bmp = await decode(p.blob), k = Math.min(1, 2000 / Math.max(p.w, p.h));
+  const c = document.createElement('canvas'); c.width = Math.round(p.w*k); c.height = Math.round(p.h*k);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height); if (bmp.close) bmp.close();
+  return new Promise(r => c.toBlob(r, 'image/jpeg', 0.9));
+}
+// OCR 엔진이 만든 PDF에는 페이지 이미지가 들어 있다. 투명한 점 하나로 바꿔 글자 층만 남긴다.
+async function stripPdfImage(bytes){
+  const {PDFDocument, PDFName, PDFDict} = PDFLib;
+  const d = await PDFDocument.load(bytes);
+  const res = d.getPage(0).node.Resources();
+  const xo = res && res.lookupMaybe(PDFName.of('XObject'), PDFDict);
+  if (xo){
+    const c = document.createElement('canvas'); c.width = c.height = 1;
+    const png = await new Promise(r => c.toBlob(r, 'image/png'));
+    const tiny = await d.embedPng(new Uint8Array(await png.arrayBuffer()));
+    for (const [k] of xo.entries()) xo.set(k, tiny.ref);
+  }
+  return d.save();
+}
+async function ocrAll(){
+  setProg('OCR 엔진 불러오는 중…');
+  await loadTess();
+  let status = '', cur = 'OCR 준비';
+  const worker = await Promise.race([
+    Tesseract.createWorker(['kor','eng'], 1, {logger: m => {
+      if (m.status){ status = m.status + (m.progress != null ? ' ' + Math.round(m.progress*100) + '%' : ''); if (cur) setProg(cur + ' · ' + status); }
+    }}),
+    new Promise((ok, no) => setTimeout(() => no(new Error('OCR 데이터를 내려받지 못했습니다. GitHub 주소에서 인터넷에 연결된 상태로 시도하세요.')), 120000))
+  ]);
+  for (const key of ['tessjs_pdf_textonly', 'textonly_pdf']){ try { await worker.setParameters({[key]: '1'}); } catch (err) {} }
+  const texts = [], pdfs = [];
+  try {
+    for (let i = 0; i < pages.length; i++){
+      cur = 'OCR ' + (i+1) + '/' + pages.length; setProg(cur);
+      const {data} = await worker.recognize(await ocrInput(pages[i]), {}, {pdf: true});
+      texts.push(data.text || '');
+      let pb = data.pdf ? Uint8Array.from(data.pdf) : null;
+      if (pb && window.PDFLib){ try { pb = await stripPdfImage(pb); } catch (err) {} }
+      pdfs.push(pb);
+    }
+  } finally { await worker.terminate(); }
+  return {texts, pdfs};
+}
+
+/* ---------- 조건 선택 → 추출 ---------- */
+function setProg(msg){ const p = $('#prog'); p.hidden = !msg; p.textContent = msg || ''; }
+function planText(){
+  const n = pages.length, one = opt.lay === 'one' || n === 1, f = [];
+  if (opt.fmt === 'pdf') f.push(one ? 'PDF 1개(' + n + '쪽)' : 'PDF ' + n + '개');
+  else f.push(one ? '이미지 1장' + (n > 1 ? '(세로로 이어 붙임)' : '') : '이미지 ' + n + '장');
+  if (opt.ocr === 'on') f.push(one ? '텍스트 1개' : '텍스트 ' + n + '개');
+  return '만들어질 파일: ' + f.join(' + ') + (opt.ocr === 'on' && opt.fmt === 'pdf' ? ' · PDF에 글자 검색 층 포함' : '');
+}
+function refreshPlan(){
+  $('#planNote').textContent = planText();
+  document.querySelectorAll('#v-out .opts').forEach(box => {
+    box.querySelectorAll('.chip').forEach(c => c.setAttribute('aria-pressed', opt[box.dataset.opt] === c.dataset.v));
+  });
+}
+$('#v-out').addEventListener('click', e => {
+  const c = e.target.closest('.opts .chip'); if (!c) return;
+  opt[c.parentElement.dataset.opt] = c.dataset.v; refreshPlan();
+  if (opt.ocr === 'on') loadTess().catch(() => toast('이 주소에서는 OCR을 쓸 수 없습니다. GitHub 주소에서 시도하세요.', 5000));
 });
-$('#imgBtn').onclick = async () => {
-  if (!outBlobs.length) return;
-  if (saveMode === 'one' && pages.length > 1){
-    if (!merged){ toast('한 장으로 합치는 중…', 0); merged = await mergePages(); $('#toast').hidden = true; showMergeNote(); }
-    saveFiles([new File([merged.blob], stamp() + '-all.jpg', {type:'image/jpeg'})]);
-  } else saveFiles(outBlobs.map((b,i) => jpgFile(i)));
+function fmtSize(b){ return b > 1048576 ? (b/1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b/1024)) + ' KB'; }
+function renderResults(){
+  const box = $('#results'); box.innerHTML = '';
+  const head = document.createElement('span'); head.className = 'lab'; head.textContent = '결과 파일 ' + outFiles.length + '개'; box.append(head);
+  outFiles.forEach((f,i) => {
+    const row = document.createElement('div'); row.className = 'f';
+    const nm = document.createElement('span'); nm.className = 'fn'; nm.textContent = f.name + ' · ' + fmtSize(f.size);
+    const b = document.createElement('button'); b.className = 'btn rs'; b.dataset.i = i; b.textContent = '저장';
+    row.append(nm, b); box.append(row);
+  });
+  if (outFiles.length > 1){
+    const all = document.createElement('button'); all.className = 'btn primary rs'; all.dataset.i = 'all'; all.textContent = '모두 저장'; box.append(all);
+  }
+  box.hidden = false;
+}
+$('#results').addEventListener('click', e => {
+  const b = e.target.closest('.rs'); if (!b) return;
+  saveFiles(b.dataset.i === 'all' ? outFiles : [outFiles[+b.dataset.i]]);
+});
+$('#extractBtn').onclick = async () => {
+  if (!pages.length) return;
+  const btn = $('#extractBtn'); btn.disabled = true; $('#results').hidden = true; $('#mergeNote').hidden = true; outFiles = [];
+  try {
+    const n = pages.length, one = opt.lay === 'one' || n === 1, st = stamp(), all = pages.map((p,i) => i);
+    const ocr = opt.ocr === 'on' ? await ocrAll() : null;
+    setProg('파일 만드는 중…'); await nextFrame();
+    if (opt.fmt === 'pdf'){
+      if (!window.PDFLib) throw new Error('PDF 도구를 불러오지 못했습니다. 인터넷 연결을 확인하세요.');
+      if (one) outFiles.push(new File([await buildPdf(all, ocr && ocr.pdfs)], st + '.pdf', {type:'application/pdf'}));
+      else for (const i of all) outFiles.push(new File([await buildPdf([i], ocr && ocr.pdfs)], st + '-p' + (i+1) + '.pdf', {type:'application/pdf'}));
+    } else if (one && n > 1){
+      const m = await mergePages();
+      outFiles.push(new File([m.blob], st + '-all.jpg', {type:'image/jpeg'}));
+      if (m.scaled){ const nt = $('#mergeNote'); nt.hidden = false; nt.textContent = '페이지가 많아 한 장으로 합칠 때 해상도를 줄였습니다(가로 ' + m.w + 'px). 선명하게 보관하려면 "페이지별로 따로"를 쓰세요.'; }
+    } else all.forEach(i => outFiles.push(jpgFile(i)));
+    if (ocr){
+      const txt = (s, name) => new File(['\ufeff' + s], name, {type:'text/plain'});
+      if (one) outFiles.push(txt(n > 1 ? ocr.texts.map((s,i) => '===== P' + (i+1) + ' =====\n' + s).join('\n') : ocr.texts[0], st + '.txt'));
+      else ocr.texts.forEach((s,i) => outFiles.push(txt(s, st + '-p' + (i+1) + '.txt')));
+    }
+    renderResults();
+  } catch (err) {
+    toast('추출 실패: ' + (err && err.message ? err.message : err), 7000);
+  } finally { setProg(''); btn.disabled = false; }
 };
+$('#toOut').onclick = async () => {
+  outUrls.forEach(u => URL.revokeObjectURL(u)); outUrls = []; outBlobs = pages.map(p => p.blob); outFiles = [];
+  const list = $('#outList'); list.innerHTML = '';
+  $('#results').hidden = true; $('#mergeNote').hidden = true; setProg('');
+  $('#outCount').textContent = pages.length + ' page' + (pages.length === 1 ? '' : 's');
+  refreshPlan(); show('out');
+  for (let i = 0; i < pages.length; i++){
+    const url = URL.createObjectURL(pages[i].blob); outUrls.push(url);
+    const f = document.createElement('figure'), im = new Image(), cap = document.createElement('figcaption'), sv = document.createElement('button');
+    im.src = url; im.alt = (i+1) + '쪽'; cap.textContent = 'P' + (i+1) + ' · ' + pages[i].w + '×' + pages[i].h;
+    sv.className = 'btn sv'; sv.dataset.i = i; sv.textContent = '이 페이지 이미지 저장';
+    f.append(im, cap, sv); list.append(f);
+  }
+};
+$('#outBack').onclick = () => show('home');
 $('#outList').addEventListener('click', e => {
   const b = e.target.closest('.sv'); if (b) saveFiles([jpgFile(+b.dataset.i)]);
 });
